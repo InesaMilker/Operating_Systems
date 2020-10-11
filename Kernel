@@ -1,0 +1,146 @@
+#include <linux/fs.h> //struct file
+#include <linux/init.h> //Macros for module initialization.
+#include <linux/kernel.h> //intended for user processes, not for kernel modules
+#include <linux/module.h> // Dynamic loading of modules into the kernel.
+#include <linux/proc_fs.h> // File system structure and calls.
+#include <linux/slab.h> // Memory allocation functions: kmalloc() and kfree().
+#include <linux/string.h> // String functions.
+#include <linux/time.h> // Time types.
+#include <linux/uaccess.h> // Memory copy.
+MODULE_LICENSE("GPL"); //Module discriptor
+MODULE_DESCRIPTION("Simple module featuring proc read"); //Module discriptor
+
+#define ENTRY_NAME "timed"
+#define ENTRY_SIZE 65
+#define PERMS 0644
+#define PARENT NULL
+static struct file_operations fops; // Points to proc file definitions.
+// defines a physically grouped list of variables under one name in a block of memory, allowing the different variables to be accessed via a single pointer or by the struct declared name
+static char * message;
+static int read_p;
+static struct timespec currentTime;
+
+// Diference between const and define https://www.geeksforgeeks.org/diffference-define-const-c/
+
+/* time_proc_open() modifies the message variable so that it
+ * contains the current amount of time since the epoch, and
+ * is additionally updated with the elapsed time since the last call
+ * “inode” -Each file has an inode containing metadata about the file.
+ */
+
+int time_proc_open(struct inode *sp_inode, struct file *sp_file)//pasileidzia kai suvedam cat proc time
+{
+	struct timespec t; // Structure holding an interval broken down into seconds and nanoseconds.
+	long int secs; //seconds
+	long int nsecs; //nanoseconds
+//The basic difference between the type int and long is of their width where int is 32 bit, and long is 64 bits
+	char * buf = kmalloc (sizeof(char) * 100, __GFP_RECLAIM);	//bounded buffer
+// kmalloc is the normal method of allocating memory for objects smaller than page size in the kernel. The general interface for allocating memory inside of the kernel is kmalloc():.returns the amount of memory is allocated to that data type
+//” __GFP_RECLAIM”: This flag is used to enable direct and kswapd reclaim. The flags field controls the behavior of memory allocation. 
+//flags how to allocate it
+//”buf”- buffer is temporary storage used to store input and output commands.
+
+	if (buf == NULL)
+	{
+		printk(KERN_WARNING "print_time"); // printk is a C function from the Linux kernel interface that prints messages to the kernel log
+		return -ENOMEM; // Error Code. “Cannot allocate memory.” The system cannot allocate more virtual memory because its capacity is full.
+	}
+	t = current_kernel_time(); // timestamp
+
+	printk(KERN_INFO "proc called open\n"); 
+	
+	read_p = 1;
+	message = kmalloc(sizeof(char) * ENTRY_SIZE,
+			 __GFP_RECLAIM | __GFP_IO | __GFP_FS); 
+// __GFP_FS	The kernel can start filesystem I/O.
+// __GFP_IO	The kernel can start disk I/O.
+// __GFP_RECLAIM: This flag is used to enable direct and kswapd reclaim
+	if (message == NULL)
+	{
+		printk(KERN_WARNING "time_proc_open");
+		return -ENOMEM;
+	}
+
+	strcpy(message, ""); // The strcpy() function copies the string pointed by source to the destination.
+
+	sprintf(buf, "current time: %ld.%09ld\n", t.tv_sec, t.tv_nsec); // sends formatted output to a string pointed to. “d”- Signed decimal integer “%”-Character. “.number”- For integer specifiers (d, i, o, u, x, X) − precision specifies the minimum number of digits to be written. “l”- The argument is interpreted as a long int or unsigned long int. “n” -Nothing printed
+	strcat(message, buf); // strcat() function contcatenates (joins) two strings.
+
+	if (currentTime.tv_sec) //“currentTime.tv_sec”-time in current seconds,kai pirma karta paleidi issaugoja kaip curenttime o antra karta vykdo sita if’a
+	{
+		secs = t.tv_sec - currentTime.tv_sec; //taking away from stamped second time current second time of a kernel. holds the number of seconds since the Epoch.
+		if (t.tv_nsec - currentTime.tv_nsec < 0) // holds the number of nanoseconds since the last second.		
+                {
+			nsecs = t.tv_nsec - 
+				currentTime.tv_nsec + 1000000000;
+			secs--;
+		}
+		else 
+			nsecs = t.tv_nsec - currentTime.tv_nsec;
+
+		sprintf(buf, "elapsed time: %ld.%09ld\n", secs, nsecs);
+		strcat(message, buf);
+	}
+
+	currentTime = current_kernel_time();
+
+	return 0;
+}
+
+/* time_proc_read() copies the contents of message to
+ * the /proc/timed entry
+ *//”ssize_t“ signed size of objects in memory. Returning size in bytes or error
+ */ 
+ssize_t time_proc_read(struct file *sp_file, char __user *buf,
+		       		   size_t size, loff_t *offset) 
+{
+	int len = strlen(message); // The strlen() function calculates the length of a given string.
+	
+	read_p = !read_p;// The -p option makes it read as a prompt, meaning it doesn't add a trailing newline before trying to read input.
+	if (read_p)
+		return 0;
+
+	printk(KERN_INFO "proc called read\n");
+
+	copy_to_user(buf, message, len); // Copy a block of data into user space, for saving information in order not to lose any.
+	return len;
+}
+
+/* time_proc_release() frees the message variable and
+ * releases the /proc/timed entry
+ */
+int time_proc_release(struct inode *sp_inode, struct file *sp_file)
+{
+	printk(KERN_NOTICE "proc called release\n");
+	kfree(message); // free previously allocated memory
+	return 0;
+}
+
+/* time_init() sets fops.open, fops.read, and fops.release, as
+ * well as creating the file /proc/timed
+ */
+static int time_init(void) //calling all the delayed processes 
+{
+	printk(KERN_NOTICE "/proc/%s create\n",ENTRY_NAME);
+	fops.open = time_proc_open; //”fops”- A pointer to a struct file_operations
+	fops.read = time_proc_read;
+	fops.release = time_proc_release;
+	
+	if (!proc_create(ENTRY_NAME, PERMS, NULL, &fops))
+	{
+		printk(KERN_WARNING "proc create\n");
+		remove_proc_entry(ENTRY_NAME, NULL);
+		return -ENOMEM;
+	}
+	
+	return 0;
+}
+module_init(time_init); //Calls a time_init function(running it)
+
+/* time_exit() removes the my_xtime module and the /proc/timed entry */ 
+static void time_exit(void)
+{
+	remove_proc_entry(ENTRY_NAME, NULL); 
+	printk(KERN_NOTICE "Removing /proc/%s\n", ENTRY_NAME); 
+}
+module_exit(time_exit); //Calls a time_exit function(running it)
